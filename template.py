@@ -71,7 +71,24 @@ def call_openai(
     """
     # TODO: import OpenAI, tạo client, gọi chat.completions.create,
     #       đo start/end time, trả về (response_text, latency)
-    raise NotImplementedError("Implement call_openai")
+    from openai import OpenAI
+    import os
+    import time
+    
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("OPENAI_BASE_URL"))
+    
+    start_time = time.perf_counter()
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+    )
+    latency = time.perf_counter() - start_time
+    
+    return response.choices[0].message.content, latency
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +110,7 @@ def call_openai_mini(
         Tái sử dụng call_openai() với model=OPENAI_MINI_MODEL — 1 dòng code.
     """
     # TODO: gọi call_openai với model=OPENAI_MINI_MODEL
-    raise NotImplementedError("Implement call_openai_mini")
+    return call_openai(prompt, model=OPENAI_MINI_MODEL, temperature=temperature, top_p=top_p, max_tokens=max_tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -117,7 +134,20 @@ def compare_models(prompt: str) -> dict:
         (0.75 từ ≈ 1 token — ước lượng thô; Part 2 sẽ tính chính xác hơn)
     """
     # TODO: gọi call_openai và call_openai_mini, ghép dict kết quả
-    raise NotImplementedError("Implement compare_models")
+    gpt4o_response, gpt4o_latency = call_openai(prompt)
+    mini_response, mini_latency = call_openai_mini(prompt)
+    
+    word_count = len(gpt4o_response.split())
+    tokens = word_count / 0.75
+    gpt4o_cost_estimate = (tokens / 1000) * PRICING_PER_1K_TOKENS["gpt-4o"]["output"]
+    
+    return {
+        "gpt4o_response": gpt4o_response,
+        "mini_response": mini_response,
+        "gpt4o_latency": gpt4o_latency,
+        "mini_latency": mini_latency,
+        "gpt4o_cost_estimate": gpt4o_cost_estimate
+    }
 
 
 # ===========================================================================
@@ -153,7 +183,25 @@ def chat_with_system_prompt(
         ]
     """
     # TODO: giống call_openai nhưng messages có thêm phần tử role="system"
-    raise NotImplementedError("Implement chat_with_system_prompt")
+    from openai import OpenAI
+    import os
+    import time
+    
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    start_time = time.perf_counter()
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
+    latency = time.perf_counter() - start_time
+    
+    return response.choices[0].message.content, latency
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +228,12 @@ def count_tokens(text: str, model: str = OPENAI_MODEL) -> int:
         max(1, len(text) // 4)   (trung bình 1 token ≈ 4 ký tự)
     """
     # TODO: dùng tiktoken để đếm token, có fallback khi lỗi
-    raise NotImplementedError("Implement count_tokens")
+    try:
+        import tiktoken
+        enc = tiktoken.encoding_for_model(model)
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +260,21 @@ def estimate_cost(prompt: str, response: str, model: str = OPENAI_MODEL) -> dict
          miễn phí — thì lấy giá gpt-4o làm tham chiếu học tập)
     """
     # TODO: đếm token prompt/response, tra bảng giá, trả về dict 5 key
-    raise NotImplementedError("Implement estimate_cost")
+    input_tokens = count_tokens(prompt, model)
+    output_tokens = count_tokens(response, model)
+    
+    pricing = PRICING_PER_1K_TOKENS.get(model, PRICING_PER_1K_TOKENS["gpt-4o"])
+    input_cost = (input_tokens / 1000) * pricing["input"]
+    output_cost = (output_tokens / 1000) * pricing["output"]
+    total_cost = input_cost + output_cost
+    
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "input_cost": input_cost,
+        "output_cost": output_cost,
+        "total_cost": total_cost,
+    }
 
 
 # ===========================================================================
@@ -236,7 +303,35 @@ def streaming_chatbot() -> None:
         - Cắt history còn 3 lượt cuối (6 message): history = history[-6:]
     """
     # TODO: vòng lặp while, đọc input, stream phản hồi, duy trì history
-    raise NotImplementedError("Implement streaming_chatbot")
+    from openai import OpenAI
+    import os
+    
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    history = []
+    
+    while True:
+        user_msg = input("Bạn: ")
+        if user_msg.strip().lower() in ("quit", "exit"):
+            break
+            
+        messages = history + [{"role": "user", "content": user_msg}]
+        
+        stream = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=messages,
+            stream=True,
+        )
+        
+        reply = ""
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            print(delta, end="", flush=True)
+            reply += delta
+        print()
+        
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        history = history[-6:]
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +358,14 @@ def retry_with_backoff(
         Exception cuối cùng của fn() sau khi hết số lần thử.
     """
     # TODO: vòng lặp retry với exponential backoff
-    raise NotImplementedError("Implement retry_with_backoff")
+    import time
+    for attempt in range(max_retries + 1):
+        try:
+            return fn()
+        except Exception:
+            if attempt == max_retries:
+                raise
+            time.sleep(base_delay * (2 ** attempt))
 
 
 # ===========================================================================
@@ -322,7 +424,62 @@ def run_assistant(
                 "total_cost": total_cost, "history": history}
     """
     # TODO: triển khai theo khung sườn trong docstring
-    raise NotImplementedError("Implement run_assistant")
+    from openai import OpenAI
+    import os
+    
+    client = OpenAI(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("OPENAI_BASE_URL")
+    )
+    
+    if get_input is None:
+        get_input = lambda: input("Bạn: ")
+        
+    history, num_turns, total_tokens, total_cost = [], 0, 0, 0.0
+    
+    while True:
+        if max_turns is not None and num_turns >= max_turns:
+            break
+            
+        try:
+            user_msg = get_input()
+        except EOFError:
+            break
+            
+        if user_msg.strip().lower() in ("quit", "exit"):
+            break
+            
+        messages = [{"role": "system", "content": persona}] + history + [{"role": "user", "content": user_msg}]
+        
+        stream = retry_with_backoff(
+            lambda: client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=messages,
+                stream=True
+            )
+        )
+        
+        reply = ""
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            print(delta, end="", flush=True)
+            reply += delta
+        print()
+        
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": reply})
+        history = history[-6:]
+        
+        num_turns += 1
+        total_tokens += count_tokens(user_msg) + count_tokens(reply)
+        total_cost += estimate_cost(user_msg, reply)["total_cost"]
+        
+    return {
+        "num_turns": num_turns,
+        "total_tokens": total_tokens,
+        "total_cost": total_cost,
+        "history": history
+    }
 
 
 # ===========================================================================
@@ -356,6 +513,7 @@ def format_comparison_table(results: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("=== So sánh model ===")
+    # Tạm tắt phần So sánh model để tiết kiệm quota API của Gemini
     result = compare_models(
         "Giải thích khác biệt giữa temperature và top_p trong một câu."
     )
